@@ -2,10 +2,23 @@ import telebot
 from telebot import types
 import sqlite3
 import time
-import requests
-import json
+import os
+import logging
+from flask import Flask, request
 
-bot = telebot.TeleBot('8273843209:AAGhlZI8WbEYsMGmulBnxxtH6qJ_eFyMKs8')
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Получаем токен из переменных окружения
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8273843209:AAGhlZI8WbEYsMGmulBnxxtH6qJ_eFyMKs8')
+
+bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+
+# Временное хранилище данных
+user_data = {}
+user_search_data = {}
 
 
 # Инициализация базы данных
@@ -27,13 +40,30 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+    logger.info("✅ База данных инициализирована")
+
+
+# Вебхук маршрут для Render
+@app.route('/')
+def home():
+    return "🤖 Бот знакомств работает! 🚀"
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    else:
+        return 'Invalid content type', 400
 
 
 # Команда /start
 @bot.message_handler(commands=['start'])
 def main(message):
     try:
-        # Проверяем есть ли анкета
         conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (message.from_user.id,))
@@ -43,27 +73,25 @@ def main(message):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
         if profile:
-            # Если анкета есть - показываем полное меню
             btn1 = types.KeyboardButton('📝 Моя анкета')
             btn2 = types.KeyboardButton('👀 Найти анкеты')
             btn3 = types.KeyboardButton('✏️ Изменить анкету')
             markup.add(btn1, btn2, btn3)
             welcome_text = 'С возвращением! Что хочешь сделать?'
         else:
-            # Если анкеты нет - предлагаем создать
             btn1 = types.KeyboardButton('📝 Создать анкету')
             markup.add(btn1)
             welcome_text = 'Привет! Я бот для знакомств 💕\nДля начала создай свою анкету!'
 
         bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+        logger.info(f"👤 Пользователь {message.from_user.id} запустил бота")
     except Exception as e:
-        print(f"Ошибка отправки: {e}")
+        logger.error(f"❌ Ошибка в /start: {e}")
 
 
 # Создание анкеты - шаг 1: имя
 @bot.message_handler(func=lambda message: message.text == '📝 Создать анкету')
 def create_profile(message):
-    # Удаляем старое меню
     markup = types.ReplyKeyboardRemove()
     msg = bot.send_message(
         message.chat.id,
@@ -82,7 +110,6 @@ def process_name(message):
             bot.register_next_step_handler(msg, process_name)
             return
 
-        # Сохраняем имя в временное хранилище
         user_data[message.from_user.id] = {'name': name}
 
         msg = bot.send_message(
@@ -92,7 +119,7 @@ def process_name(message):
         )
         bot.register_next_step_handler(msg, process_age)
     except Exception as e:
-        print(f"Ошибка в process_name: {e}")
+        logger.error(f"Ошибка в process_name: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -114,7 +141,6 @@ def process_age(message):
 
         user_data[message.from_user.id]['age'] = age
 
-        # Создаем кнопки для выбора пола
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         btn1 = types.KeyboardButton('👨 Мужской')
         btn2 = types.KeyboardButton('👩 Женский')
@@ -128,7 +154,7 @@ def process_age(message):
         )
         bot.register_next_step_handler(msg, process_gender)
     except Exception as e:
-        print(f"Ошибка в process_age: {e}")
+        logger.error(f"Ошибка в process_age: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -143,7 +169,6 @@ def process_gender(message):
 
         user_data[message.from_user.id]['gender'] = gender
 
-        # Убираем кнопки для ввода города
         markup = types.ReplyKeyboardRemove()
         msg = bot.send_message(
             message.chat.id,
@@ -153,7 +178,7 @@ def process_gender(message):
         )
         bot.register_next_step_handler(msg, process_city)
     except Exception as e:
-        print(f"Ошибка в process_gender: {e}")
+        logger.error(f"Ошибка в process_gender: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -169,12 +194,11 @@ def process_city(message):
 
         user_data[message.from_user.id]['city'] = city
 
-
-
         example_about = """*Пример заполнения:*
 🎯 Ищу: новые знакомства, общение
 💼 Делаю: учусь в школе, занимаюсь спортом
 🎮 Интересы: игры, музыка, путешествия
+📱 Telegram: @username
 
 *Теперь расскажи о себе:*"""
 
@@ -185,7 +209,7 @@ def process_city(message):
         )
         bot.register_next_step_handler(msg, process_about)
     except Exception as e:
-        print(f"Ошибка в process_city: {e}")
+        logger.error(f"Ошибка в process_city: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -263,11 +287,7 @@ def process_about(message):
 def process_photo_choice(message):
     try:
         if message.text == '📸 Добавить фото':
-            msg = bot.send_message(
-                message.chat.id,
-                '📷 Отлично! Пришли свое *фото*:',
-                parse_mode='Markdown'
-            )
+            msg = bot.send_message(message.chat.id, '📷 Отлично! Пришли свое *фото*:', parse_mode='Markdown')
             bot.register_next_step_handler(msg, process_photo)
         elif message.text == '🚀 Без фото':
             user_data[message.from_user.id]['photo'] = None
@@ -276,7 +296,7 @@ def process_photo_choice(message):
             msg = bot.send_message(message.chat.id, '❌ Пожалуйста, выбери вариант *из кнопок*:')
             bot.register_next_step_handler(msg, process_photo_choice)
     except Exception as e:
-        print(f"Ошибка в process_photo_choice: {e}")
+        logger.error(f"Ошибка в process_photo_choice: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -291,7 +311,7 @@ def process_photo(message):
             msg = bot.send_message(message.chat.id, '❌ Пожалуйста, пришли *фото*:')
             bot.register_next_step_handler(msg, process_photo)
     except Exception as e:
-        print(f"Ошибка в process_photo: {e}")
+        logger.error(f"Ошибка в process_photo: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
@@ -305,7 +325,6 @@ def save_complete_profile(message):
             bot.send_message(message.chat.id, '❌ Данные потеряны. Начни заново: /start')
             return
 
-        # Сохраняем в базу данных
         conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('''
@@ -319,19 +338,15 @@ def save_complete_profile(message):
         conn.commit()
         conn.close()
 
-        # Очищаем временные данные
         if user_id in user_data:
             del user_data[user_id]
 
-        # Показываем созданную анкету
         show_profile(message.chat.id, user_id, is_new=True)
-
-        # Возвращаем главное меню
         time.sleep(2)
         main_menu(message)
 
     except Exception as e:
-        print(f"Ошибка в save_complete_profile: {e}")
+        logger.error(f"Ошибка в save_complete_profile: {e}")
         bot.send_message(message.chat.id, '❌ Ошибка сохранения. Начни заново: /start')
 
 
@@ -383,7 +398,7 @@ def show_profile(chat_id, user_id, is_new=False):
             else:
                 bot.send_message(chat_id, profile_text, parse_mode='Markdown')
         except Exception as e:
-            print(f"Ошибка отправки анкеты: {e}")
+            logger.error(f"Ошибка отправки анкеты: {e}")
             bot.send_message(chat_id, profile_text, parse_mode='Markdown')
 
 
@@ -402,10 +417,9 @@ def my_profile(message):
         bot.send_message(message.chat.id, '❌ У тебя еще нет анкеты! Нажми "📝 Создать анкету"')
 
 
-# Поиск анкет (только для тех у кого есть анкета)
+# Поиск анкет
 @bot.message_handler(func=lambda message: message.text == '👀 Найти анкеты')
 def find_profiles(message):
-    # Проверяем есть ли анкета у пользователя
     conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (message.from_user.id,))
@@ -416,7 +430,6 @@ def find_profiles(message):
         conn.close()
         return
 
-    # Ищем другие анкеты
     cursor.execute('''
         SELECT * FROM profiles 
         WHERE user_id != ? AND is_active = 1 
@@ -429,13 +442,11 @@ def find_profiles(message):
         bot.send_message(message.chat.id, '😔 Пока нет других анкет\nБудь первым, кто найдет пару!')
         return
 
-    # Сохраняем список анкет для пользователя
     user_search_data[message.from_user.id] = {
         'profiles': profiles,
         'current_index': 0
     }
 
-    # Показываем первую анкету
     show_next_profile(message)
 
 
@@ -494,7 +505,7 @@ def show_next_profile(message):
                 parse_mode='Markdown'
             )
     except Exception as e:
-        print(f"Ошибка отправки анкеты: {e}")
+        logger.error(f"Ошибка отправки анкеты: {e}")
 
 
 # Обработка callback-ов
@@ -515,18 +526,38 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, '🚫 Жалоба отправлена модератору')
 
 
-# Временное хранилище данных
-user_data = {}
-user_search_data = {}
+# Запуск бота
+if __name__ == '__main__':
+    logger.info("🔄 Инициализация бота...")
+    init_db()
 
-# Инициализация БД при запуске
-init_db()
+    # Если на Render - используем вебхуки
+    if os.environ.get('RENDER'):
+        logger.info("🌐 Режим Render - настройка вебхуков...")
 
-print("🚀 Бот знакомств запущен...")
-while True:
-    try:
-        bot.polling(none_stop=True, timeout=30)
-    except Exception as e:
-        print(f"❌ Ошибка подключения: {e}")
-        print("🔄 Переподключение через 10 секунд...")
-        time.sleep(10)
+        time.sleep(3)
+
+        render_url = os.environ.get('RENDER_EXTERNAL_URL')
+        if render_url:
+            webhook_url = f"{render_url}/webhook"
+            try:
+                bot.remove_webhook()
+                time.sleep(1)
+                bot.set_webhook(url=webhook_url)
+                logger.info(f"✅ Вебхук установлен: {webhook_url}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка вебхука: {e}")
+
+        port = int(os.environ.get('PORT', 5000))
+        logger.info(f"🚀 Запуск Flask на порту {port}")
+        app.run(host='0.0.0.0', port=port)
+
+    else:
+        # Локальный запуск с поллингом
+        logger.info("🖥️ Локальный запуск (поллинг)...")
+        while True:
+            try:
+                bot.polling(none_stop=True, timeout=60)
+            except Exception as e:
+                logger.error(f"❌ Ошибка: {e}")
+                time.sleep(10)
