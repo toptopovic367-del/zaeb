@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: telegram-dating-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        value: "8273843209:AAGhlZI8WbEYsMGmulBnxxtH6qJ_eFyMKs8"
