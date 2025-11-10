@@ -248,39 +248,9 @@ def process_about(message):
         )
         bot.register_next_step_handler(msg, process_photo_choice)
 
-        # msg = bot.send_message(
-        #     message.chat.id,
-        #     '📝 Отлично! Теперь укажи свой *Telegram username*:\n\n_Например: @username_\n_Если нет username, напиши "нет"_',
-        #     parse_mode='Markdown'
-        # )
-        # bot.register_next_step_handler(msg, process_telegram)
-
     except Exception as e:
         print(f"Ошибка в process_about: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
-
-
-# # Шаг 6: Telegram username
-# def process_telegram(message):
-#     try:
-#         telegram = message.text.strip()
-#         user_data[message.from_user.id]['telegram'] = telegram
-#
-#         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-#         btn1 = types.KeyboardButton('📸 Добавить фото')
-#         btn2 = types.KeyboardButton('🚀 Без фото')
-#         markup.add(btn1, btn2)
-#
-#         msg = bot.send_message(
-#             message.chat.id,
-#             f'📱 Telegram: *{telegram}*\n\n*Хочешь добавить фото к анкете?*',
-#             parse_mode='Markdown',
-#             reply_markup=markup
-#         )
-#         bot.register_next_step_handler(msg, process_photo_choice)
-#     except Exception as e:
-#         print(f"Ошибка в process_telegram: {e}")
-#         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
 # Шаг 7: выбор - добавлять фото или нет
@@ -507,6 +477,259 @@ def show_next_profile(message):
     except Exception as e:
         logger.error(f"Ошибка отправки анкеты: {e}")
 
+
+# ========== НОВЫЙ КОД: УПРАВЛЕНИЕ АНКЕТОЙ ==========
+
+# Изменение анкеты
+@bot.message_handler(func=lambda message: message.text == '✏️ Изменить анкету')
+def edit_profile(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton('👤 Изменить имя')
+    btn2 = types.KeyboardButton('🎂 Изменить возраст')
+    btn3 = types.KeyboardButton('🏙️ Изменить город')
+    btn4 = types.KeyboardButton('📖 Изменить описание')
+    btn5 = types.KeyboardButton('📷 Изменить фото')
+    btn6 = types.KeyboardButton('🗑️ Удалить анкету')
+    btn7 = types.KeyboardButton('🔙 Назад')
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7)
+
+    bot.send_message(
+        message.chat.id,
+        '✏️ *Управление анкетой*\n\nЧто хочешь сделать?',
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+
+# Назад в главное меню
+@bot.message_handler(func=lambda message: message.text == '🔙 Назад')
+def back_to_main(message):
+    main(message)
+
+
+# Удаление анкеты
+@bot.message_handler(func=lambda message: message.text == '🗑️ Удалить анкету')
+def delete_profile(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton('✅ Да, удалить')
+    btn2 = types.KeyboardButton('❌ Нет, отмена')
+    markup.add(btn1, btn2)
+
+    bot.send_message(
+        message.chat.id,
+        '⚠️ *Точно удалить анкету?*\n\nЭто действие нельзя отменить!',
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+
+@bot.message_handler(func=lambda message: message.text == '✅ Да, удалить')
+def confirm_delete(message):
+    try:
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM profiles WHERE user_id = ?', (message.from_user.id,))
+        conn.commit()
+        conn.close()
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn1 = types.KeyboardButton('📝 Создать анкету')
+        markup.add(btn1)
+
+        bot.send_message(
+            message.chat.id,
+            '🗑️ *Анкета удалена!*\n\nТы можешь создать новую анкету.',
+            parse_mode='Markdown',
+            reply_markup=markup
+        )
+        logger.info(f"👤 Пользователь {message.from_user.id} удалил анкету")
+    except Exception as e:
+        logger.error(f"Ошибка удаления анкеты: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при удалении анкеты')
+
+
+@bot.message_handler(func=lambda message: message.text == '❌ Нет, отмена')
+def cancel_delete(message):
+    edit_profile(message)
+
+
+# Изменение имени
+@bot.message_handler(func=lambda message: message.text == '👤 Изменить имя')
+def edit_name(message):
+    msg = bot.send_message(
+        message.chat.id,
+        '✏️ Введи новое имя:',
+        parse_mode='Markdown',
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_edit_name)
+
+
+def process_edit_name(message):
+    try:
+        new_name = message.text.strip()
+        if len(new_name) < 2:
+            msg = bot.send_message(message.chat.id, '❌ Имя должно быть не короче 2 символов!\nПопробуй еще раз:')
+            bot.register_next_step_handler(msg, process_edit_name)
+            return
+
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE profiles SET name = ? WHERE user_id = ?', (new_name, message.from_user.id))
+        conn.commit()
+        conn.close()
+
+        bot.send_message(message.chat.id, f'✅ Имя изменено на: *{new_name}*', parse_mode='Markdown')
+        edit_profile(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка изменения имени: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при изменении имени')
+
+
+# Изменение возраста
+@bot.message_handler(func=lambda message: message.text == '🎂 Изменить возраст')
+def edit_age(message):
+    msg = bot.send_message(
+        message.chat.id,
+        '✏️ Введи новый возраст:',
+        parse_mode='Markdown',
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_edit_age)
+
+
+def process_edit_age(message):
+    try:
+        if not message.text.isdigit():
+            msg = bot.send_message(message.chat.id, '❌ Пожалуйста, введи возраст цифрами:')
+            bot.register_next_step_handler(msg, process_edit_age)
+            return
+
+        new_age = int(message.text)
+        if new_age < 16 or new_age > 100:
+            msg = bot.send_message(message.chat.id, '❌ Возраст должен быть от 16 до 100 лет:')
+            bot.register_next_step_handler(msg, process_edit_age)
+            return
+
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE profiles SET age = ? WHERE user_id = ?', (new_age, message.from_user.id))
+        conn.commit()
+        conn.close()
+
+        bot.send_message(message.chat.id, f'✅ Возраст изменен на: *{new_age}*', parse_mode='Markdown')
+        edit_profile(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка изменения возраста: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при изменении возраста')
+
+
+# Изменение города
+@bot.message_handler(func=lambda message: message.text == '🏙️ Изменить город')
+def edit_city(message):
+    msg = bot.send_message(
+        message.chat.id,
+        '✏️ Введи новый город:',
+        parse_mode='Markdown',
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_edit_city)
+
+
+def process_edit_city(message):
+    try:
+        new_city = message.text.strip()
+        if len(new_city) < 2:
+            msg = bot.send_message(message.chat.id,
+                                   '❌ Название города должно быть не короче 2 символов!\nПопробуй еще раз:')
+            bot.register_next_step_handler(msg, process_edit_city)
+            return
+
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE profiles SET city = ? WHERE user_id = ?', (new_city, message.from_user.id))
+        conn.commit()
+        conn.close()
+
+        bot.send_message(message.chat.id, f'✅ Город изменен на: *{new_city}*', parse_mode='Markdown')
+        edit_profile(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка изменения города: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при изменении города')
+
+
+# Изменение описания
+@bot.message_handler(func=lambda message: message.text == '📖 Изменить описание')
+def edit_about(message):
+    msg = bot.send_message(
+        message.chat.id,
+        '✏️ Введи новое описание о себе:',
+        parse_mode='Markdown',
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_edit_about)
+
+
+def process_edit_about(message):
+    try:
+        new_about = message.text.strip()
+        if len(new_about) < 20:
+            msg = bot.send_message(message.chat.id, '❌ Описание должно быть не короче 20 символов!\nПопробуй еще раз:')
+            bot.register_next_step_handler(msg, process_edit_about)
+            return
+
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE profiles SET about = ? WHERE user_id = ?', (new_about, message.from_user.id))
+        conn.commit()
+        conn.close()
+
+        bot.send_message(message.chat.id, '✅ Описание успешно обновлено!', parse_mode='Markdown')
+        edit_profile(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка изменения описания: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при изменении описания')
+
+
+# Изменение фото
+@bot.message_handler(func=lambda message: message.text == '📷 Изменить фото')
+def edit_photo(message):
+    msg = bot.send_message(
+        message.chat.id,
+        '📷 Пришли новое фото для анкеты:',
+        parse_mode='Markdown',
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    bot.register_next_step_handler(msg, process_edit_photo)
+
+
+def process_edit_photo(message):
+    try:
+        if message.content_type == 'photo':
+            new_photo = message.photo[-1].file_id
+
+            conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE profiles SET photo = ? WHERE user_id = ?', (new_photo, message.from_user.id))
+            conn.commit()
+            conn.close()
+
+            bot.send_message(message.chat.id, '✅ Фото успешно обновлено!', parse_mode='Markdown')
+            edit_profile(message)
+        else:
+            msg = bot.send_message(message.chat.id, '❌ Пожалуйста, пришли фото:')
+            bot.register_next_step_handler(msg, process_edit_photo)
+
+    except Exception as e:
+        logger.error(f"Ошибка изменения фото: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при изменении фото')
+
+
+# ========== КОНЕЦ НОВОГО КОДА ==========
 
 # Обработка callback-ов
 @bot.callback_query_handler(func=lambda call: True)
