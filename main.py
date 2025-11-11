@@ -2,11 +2,12 @@ import sqlite3
 import json
 from telebot import TeleBot, types
 
-bot = TeleBot('8273843209:AAG8OkRlJCfJvkbKFZ7QgGy-1Z_zZeR7ZVQ')
+bot = TeleBot('8273843209:AA68BKRLJCFJykbKFZ7Qg6y-12_ZZeR72V0')
+
 
 # Инициализация базы данных
 def init_db():
-    conn = sqlite3.connect('database.db', check_same_thread=False)  # ← ПРАВИЛЬНО!
+    conn = sqlite3.connect('database.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -31,8 +32,11 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
+
 user_data = {}
+
 
 # Команда /start
 @bot.message_handler(commands=['start'])
@@ -89,15 +93,12 @@ def process_city(message):
     user_id = message.from_user.id
     user_data[user_id]['city'] = message.text
 
-    # Предлагаем отправить геолокацию
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_btn = types.KeyboardButton("📍 Отправить геолокацию", request_location=True)
     skip_btn = types.KeyboardButton("⏭ Пропустить")
     markup.add(location_btn, skip_btn)
 
-    bot.send_message(message.chat.id,
-                     "📍 Хочешь отправить свою геолокацию? Это поможет находить анкеты рядом с тобой!",
-                     reply_markup=markup)
+    bot.send_message(message.chat.id, "📍 Хочешь отправить свою геолокацию?", reply_markup=markup)
     bot.register_next_step_handler(message, process_location)
 
 
@@ -105,7 +106,6 @@ def process_location(message):
     user_id = message.from_user.id
 
     if message.location:
-        # Сохраняем координаты
         user_data[user_id]['latitude'] = message.location.latitude
         user_data[user_id]['longitude'] = message.location.longitude
         bot.send_message(message.chat.id, "📍 Геолокация сохранена!")
@@ -118,7 +118,6 @@ def process_location(message):
         bot.register_next_step_handler(message, process_location)
         return
 
-    # Убираем специальную клавиатуру
     remove_markup = types.ReplyKeyboardRemove()
     bot.send_message(message.chat.id, "Расскажи о себе", reply_markup=remove_markup)
     bot.register_next_step_handler(message, process_bio)
@@ -142,7 +141,6 @@ def process_photo(message):
     user_data[user_id]['photo'] = message.photo[-1].file_id
     user_data[user_id]['username'] = message.from_user.username
 
-    # Сохраняем в базу
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     data = user_data[user_id]
@@ -167,7 +165,6 @@ def find_profile(message):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
 
-    # Ищем анкеты, которые пользователь еще не лайкал
     cursor.execute('''
         SELECT * FROM users 
         WHERE user_id != ? 
@@ -191,7 +188,6 @@ def show_profile_to_like(chat_id, profile, viewer_id):
 
     caption = f"👤 {name}, {age}\n🏙 {city}\n📝 {bio}"
 
-    # Добавляем информацию о геолокации если есть
     if latitude and longitude:
         caption += f"\n📍 Есть геолокация"
 
@@ -199,7 +195,6 @@ def show_profile_to_like(chat_id, profile, viewer_id):
     like_btn = types.InlineKeyboardButton('❤️ Лайк', callback_data=f'like_{user_id}')
     next_btn = types.InlineKeyboardButton('➡️ Дальше', callback_data='next')
 
-    # Добавляем кнопку для просмотра геолокации
     if latitude and longitude:
         location_btn = types.InlineKeyboardButton('📍 Посмотреть на карте', callback_data=f'location_{user_id}')
         markup.add(like_btn, location_btn)
@@ -210,7 +205,7 @@ def show_profile_to_like(chat_id, profile, viewer_id):
     bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
 
 
-# Обработка просмотра геолокации
+# Просмотр геолокации
 @bot.callback_query_handler(func=lambda call: call.data.startswith('location_'))
 def show_location(call):
     user_id = int(call.data.split('_')[1])
@@ -235,12 +230,10 @@ def handle_like(call):
     liker_id = call.from_user.id
     liked_id = int(call.data.split('_')[1])
 
-    # Сохраняем лайк
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('INSERT INTO likes (liker_id, liked_id) VALUES (?, ?)', (liker_id, liked_id))
 
-    # Получаем информацию о том, кто лайкнул
     cursor.execute('SELECT username, name FROM users WHERE user_id = ?', (liker_id,))
     liker_info = cursor.fetchone()
 
@@ -248,7 +241,6 @@ def handle_like(call):
         liker_username, liker_name = liker_info
         display_username = f"@{liker_username}" if liker_username else "пользователь"
 
-        # Отправляем уведомление тому, кого лайкнули
         gender_text = "ей" if liker_name and liker_name.endswith(('а', 'я')) else "ему"
 
         notification_markup = types.InlineKeyboardMarkup()
@@ -267,7 +259,7 @@ def handle_like(call):
                 reply_markup=notification_markup
             )
         except:
-            pass  # Если пользователь заблокировал бота
+            pass
 
     conn.commit()
     conn.close()
@@ -289,7 +281,6 @@ def show_my_likes(message):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
 
-    # Кто лайкнул меня
     cursor.execute('''
         SELECT u.* FROM users u 
         JOIN likes l ON u.user_id = l.liker_id 
