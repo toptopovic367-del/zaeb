@@ -93,12 +93,18 @@ def process_city(message):
     user_id = message.from_user.id
     user_data[user_id]['city'] = message.text
 
+    # Кнопка геолокации появляется здесь!
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     location_btn = types.KeyboardButton("📍 Отправить геолокацию", request_location=True)
     skip_btn = types.KeyboardButton("⏭ Пропустить")
     markup.add(location_btn, skip_btn)
 
-    bot.send_message(message.chat.id, "📍 Хочешь отправить свою геолокацию?", reply_markup=markup)
+    bot.send_message(
+        message.chat.id,
+        "📍 Хочешь отправить свою геолокацию? Это поможет находить анкеты рядом с тобой!\n\n"
+        "Или нажми 'Пропустить' чтобы продолжить без геолокации",
+        reply_markup=markup
+    )
     bot.register_next_step_handler(message, process_location)
 
 
@@ -180,7 +186,8 @@ def find_profile(message):
     if profile:
         show_profile_to_like(message.chat.id, profile, user_id)
     else:
-        bot.send_message(message.chat.id, "❌ Анкет больше нет!")
+        # ИЗМЕНЕНИЕ: Новая фраза когда анкет нет
+        bot.send_message(message.chat.id, "😔 Пока тут нет анкет...\n\nБудь первым - создай анкету! 👆")
 
 
 def show_profile_to_like(chat_id, profile, viewer_id):
