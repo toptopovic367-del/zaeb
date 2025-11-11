@@ -878,7 +878,11 @@ def delete_profile(message):
     )
 
 
-@bot.message_handler(func=lambda message: message.text == '✅ Да, удалить')
+@bot.message_handler(func=lambda message: message.text == 'Да, удалить')
 def confirm_delete(message):
     try:
-        conn = sqlite3
+        conn = sqlite3.connect('database.db')  # ← ДОЛЖЕН БЫТЬ ОТСТУП!
+        cursor = conn.cursor()
+        # остальной код...
+    except Exception as e:
+        print(f"Error: {e}")
