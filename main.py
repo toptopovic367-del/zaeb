@@ -64,6 +64,9 @@ def webhook():
 @bot.message_handler(commands=['start'])
 def main(message):
     try:
+        # Отправляем быстрый ответ чтобы пользователь видел что бот живой
+        bot.send_chat_action(message.chat.id, 'typing')
+
         conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (message.from_user.id,))
@@ -87,11 +90,14 @@ def main(message):
         logger.info(f"👤 Пользователь {message.from_user.id} запустил бота")
     except Exception as e:
         logger.error(f"❌ Ошибка в /start: {e}")
+        # Даже при ошибке отправляем ответ
+        bot.send_message(message.chat.id, 'Привет! Я бот для знакомств 💕')
 
 
 # Создание анкеты - шаг 1: имя
 @bot.message_handler(func=lambda message: message.text == '📝 Создать анкету')
 def create_profile(message):
+    bot.send_chat_action(message.chat.id, 'typing')
     markup = types.ReplyKeyboardRemove()
     msg = bot.send_message(
         message.chat.id,
@@ -390,6 +396,7 @@ def my_profile(message):
 # Поиск анкет
 @bot.message_handler(func=lambda message: message.text == '👀 Найти анкеты')
 def find_profiles(message):
+    # Проверяем есть ли анкета у пользователя
     conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (message.from_user.id,))
@@ -400,6 +407,7 @@ def find_profiles(message):
         conn.close()
         return
 
+    # Ищем другие анкеты
     cursor.execute('''
         SELECT * FROM profiles 
         WHERE user_id != ? AND is_active = 1 
@@ -412,11 +420,13 @@ def find_profiles(message):
         bot.send_message(message.chat.id, '😔 Пока нет других анкет\nБудь первым, кто найдет пару!')
         return
 
+    # Сохраняем список анкет для пользователя
     user_search_data[message.from_user.id] = {
         'profiles': profiles,
         'current_index': 0
     }
 
+    # Показываем первую анкету
     show_next_profile(message)
 
 
@@ -432,7 +442,8 @@ def show_next_profile(message):
 
     if index >= len(profiles):
         bot.send_message(message.chat.id, '🔚 Это все анкеты на данный момент!\nПопробуй позже ⏳')
-        del user_search_data[user_id]
+        if user_id in user_search_data:
+            del user_search_data[user_id]
         return
 
     profile = profiles[index]
@@ -452,7 +463,7 @@ def show_next_profile(message):
     """
 
     markup = types.InlineKeyboardMarkup()
-    btn_like = types.InlineKeyboardButton('❤️ Лайк', callback_data=f'like_{user_id}')
+    btn_like = types.InlineKeyboardButton('❤️ Лайк', callback_data=f'like_{user_id}_{message.from_user.id}')
     btn_next = types.InlineKeyboardButton('➡️ Дальше', callback_data='next')
     btn_report = types.InlineKeyboardButton('🚫 Пожаловаться', callback_data=f'report_{user_id}')
     markup.add(btn_like, btn_next)
@@ -735,15 +746,66 @@ def process_edit_photo(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     if call.data.startswith('like_'):
-        user_id = int(call.data.split('_')[1])
-        bot.answer_callback_query(call.id, '❤️ Лайк отправлен!')
+        # Формат: like_{user_id_которому_лайкаем}_{user_id_кто_лайкает}
+        parts = call.data.split('_')
+        if len(parts) >= 3:
+            liked_user_id = int(parts[1])  # Чью анкету лайкнули
+            liker_user_id = int(parts[2])  # Кто лайкнул
+
+            # Отправляем уведомление пользователю чью анкету лайкнули
+            try:
+                # Получаем информацию о том кто лайкнул
+                conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (liker_user_id,))
+                liker_profile = cursor.fetchone()
+                conn.close()
+
+                if liker_profile:
+                    liker_user_id, liker_name, liker_age, liker_gender, liker_city, liker_about, liker_telegram, liker_photo, liker_is_active = liker_profile
+
+                    # Отправляем уведомление
+                    notification_text = f"""
+💖 *Тебя лайкнули!*
+
+👤 *{liker_name}* ({liker_age} лет)
+🏙️ *Город:* {liker_city}
+📱 *Telegram:* {liker_telegram}
+
+*О себе:*
+{liker_about}
+
+💌 Напиши ему/ей первым!
+                    """
+
+                    try:
+                        if liker_photo:
+                            bot.send_photo(liked_user_id, liker_photo, caption=notification_text, parse_mode='Markdown')
+                        else:
+                            bot.send_message(liked_user_id, notification_text, parse_mode='Markdown')
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки уведомления: {e}")
+
+                bot.answer_callback_query(call.id, '❤️ Лайк отправлен! Владелец анкеты получил уведомление!')
+
+            except Exception as e:
+                logger.error(f"Ошибка обработки лайка: {e}")
+                bot.answer_callback_query(call.id, '❤️ Лайк отправлен!')
+        else:
+            bot.answer_callback_query(call.id, '❤️ Лайк отправлен!')
 
     elif call.data == 'next':
         user_id = call.from_user.id
         if user_id in user_search_data:
             user_search_data[user_id]['current_index'] += 1
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except:
+                pass  # Если не удалось удалить сообщение - продолжаем
             show_next_profile(call.message)
+        else:
+            # Если данных нет, запускаем поиск заново
+            find_profiles(call.message)
 
     elif call.data.startswith('report_'):
         bot.answer_callback_query(call.id, '🚫 Жалоба отправлена модератору')
