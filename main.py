@@ -2,7 +2,7 @@ import sqlite3
 import json
 from telebot import TeleBot, types
 
-bot = TeleBot('8273843209:AA68BKRLJCFJykbKFZ7Qg6y-12_ZZeR72V0')
+bot = TeleBot('8273843209:AAG8OkRlJCfJvkbKFZ7QgGy-1Z_zZeR7ZVQ')
 
 
 # Инициализация базы данных
