@@ -2,12 +2,11 @@ import sqlite3
 import json
 from telebot import TeleBot, types
 
-bot = TeleBot('8273843209:AAG-cGDJpOkBfHMkgxDdeRzY_nS5mPzUq8I')
-
+bot = TeleBot('8273843209:AAG8OkRlJCfJvkbKFZ7QgGy-1Z_zZeR7ZVQ')
 
 # Инициализация базы данных
 def init_db():
-    conn = sqlite3.connect('database.db', check_same_thread=False)
+    conn = sqlite3.connect('database.db', check_same_thread=False)  # ← ПРАВИЛЬНО!
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -32,11 +31,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 init_db()
-
 user_data = {}
-
 
 # Команда /start
 @bot.message_handler(commands=['start'])
