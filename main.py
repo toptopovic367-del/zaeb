@@ -19,6 +19,7 @@ app = Flask(__name__)
 # Временное хранилище данных
 user_data = {}
 user_search_data = {}
+user_filters = {}  # Для хранения фильтров поиска
 
 
 # Инициализация базы данных
@@ -32,10 +33,30 @@ def init_db():
             age INTEGER,
             gender TEXT,
             city TEXT,
+            latitude REAL,
+            longitude REAL,
             about TEXT,
             telegram TEXT,
             photo TEXT,
-            is_active INTEGER DEFAULT 1
+            likes_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS views (
+            viewer_id INTEGER,
+            viewed_id INTEGER,
+            viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (viewer_id, viewed_id)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS likes (
+            liker_id INTEGER,
+            liked_id INTEGER,
+            liked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (liker_id, liked_id)
         )
     ''')
     conn.commit()
@@ -64,7 +85,6 @@ def webhook():
 @bot.message_handler(commands=['start'])
 def main(message):
     try:
-        # Отправляем быстрый ответ чтобы пользователь видел что бот живой
         bot.send_chat_action(message.chat.id, 'typing')
 
         conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
@@ -78,8 +98,9 @@ def main(message):
         if profile:
             btn1 = types.KeyboardButton('📝 Моя анкета')
             btn2 = types.KeyboardButton('👀 Найти анкеты')
-            btn3 = types.KeyboardButton('✏️ Изменить анкету')
-            markup.add(btn1, btn2, btn3)
+            btn3 = types.KeyboardButton('⚙️ Фильтры поиска')
+            btn4 = types.KeyboardButton('✏️ Изменить анкету')
+            markup.add(btn1, btn2, btn3, btn4)
             welcome_text = 'С возвращением! Что хочешь сделать?'
         else:
             btn1 = types.KeyboardButton('📝 Создать анкету')
@@ -90,8 +111,205 @@ def main(message):
         logger.info(f"👤 Пользователь {message.from_user.id} запустил бота")
     except Exception as e:
         logger.error(f"❌ Ошибка в /start: {e}")
-        # Даже при ошибке отправляем ответ
         bot.send_message(message.chat.id, 'Привет! Я бот для знакомств 💕')
+
+
+# Фильтры поиска
+@bot.message_handler(func=lambda message: message.text == '⚙️ Фильтры поиска')
+def search_filters(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton('👨 Искать парней')
+    btn2 = types.KeyboardButton('👩 Искать девушек')
+    btn3 = types.KeyboardButton('👥 Искать всех')
+    btn4 = types.KeyboardButton('📍 Поиск по геолокации')
+    btn5 = types.KeyboardButton('🔙 Назад')
+    markup.add(btn1, btn2, btn3, btn4, btn5)
+
+    # Получаем текущие настройки фильтра
+    current_filter = user_filters.get(message.from_user.id, {}).get('gender', 'all')
+    filter_text = {
+        'male': '👨 Парни',
+        'female': '👩 Девушки',
+        'all': '👥 Все'
+    }.get(current_filter, '👥 Все')
+
+    bot.send_message(
+        message.chat.id,
+        f'⚙️ *Текущий фильтр:* {filter_text}\n\nВыбери кого хочешь искать:',
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+
+@bot.message_handler(func=lambda message: message.text in ['👨 Искать парней', '👩 Искать девушек', '👥 Искать всех'])
+def set_search_filter(message):
+    filter_map = {
+        '👨 Искать парней': 'male',
+        '👩 Искать девушек': 'female',
+        '👥 Искать всех': 'all'
+    }
+
+    if message.from_user.id not in user_filters:
+        user_filters[message.from_user.id] = {}
+
+    user_filters[message.from_user.id]['gender'] = filter_map[message.text]
+
+    filter_text = {
+        'male': '👨 парней',
+        'female': '👩 девушек',
+        'all': '👥 всех'
+    }.get(filter_map[message.text])
+
+    bot.send_message(
+        message.chat.id,
+        f'✅ Теперь будешь искать *{filter_text}*',
+        parse_mode='Markdown'
+    )
+    main(message)
+
+
+# Поиск по геолокации
+@bot.message_handler(func=lambda message: message.text == '📍 Поиск по геолокации')
+def request_location(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_location = types.KeyboardButton('📍 Отправить геолокацию', request_location=True)
+    btn_back = types.KeyboardButton('🔙 Назад')
+    markup.add(btn_location, btn_back)
+
+    bot.send_message(
+        message.chat.id,
+        '📍 *Поиск по геолокации*\n\nНажми кнопку ниже чтобы отправить свою геолокацию. Я найду анкеты рядом с тобой!',
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+
+# Обработка геолокации
+@bot.message_handler(content_types=['location'])
+def handle_location(message):
+    try:
+        latitude = message.location.latitude
+        longitude = message.location.longitude
+
+        # Сохраняем геолокацию пользователя
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE profiles SET latitude = ?, longitude = ? WHERE user_id = ?',
+            (latitude, longitude, message.from_user.id)
+        )
+        conn.commit()
+        conn.close()
+
+        # Устанавливаем фильтр по геолокации
+        if message.from_user.id not in user_filters:
+            user_filters[message.from_user.id] = {}
+        user_filters[message.from_user.id]['location'] = True
+        user_filters[message.from_user.id]['user_lat'] = latitude
+        user_filters[message.from_user.id]['user_lon'] = longitude
+
+        bot.send_message(
+            message.chat.id,
+            f'📍 *Геолокация сохранена!*\n\nШирота: {latitude:.4f}\nДолгота: {longitude:.4f}\n\nТеперь буду искать анкеты рядом с тобой!',
+            parse_mode='Markdown'
+        )
+
+        # Запускаем поиск с геолокацией
+        find_profiles_with_location(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка обработки геолокации: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при обработке геолокации')
+
+
+# Функция расчета расстояния между точками (упрощенная формула)
+def calculate_distance(lat1, lon1, lat2, lon2):
+    # Упрощенный расчет расстояния (в км)
+    import math
+    R = 6371  # Радиус Земли в км
+
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+
+    a = (math.sin(dlat / 2) * math.sin(dlat / 2) +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(dlon / 2) * math.sin(dlon / 2))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def find_profiles_with_location(message):
+    """Поиск анкет с учетом геолокации"""
+    try:
+        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+
+        # Получаем текущие настройки фильтра
+        user_filter = user_filters.get(message.from_user.id, {})
+        user_lat = user_filter.get('user_lat')
+        user_lon = user_filter.get('user_lon')
+
+        if not user_lat or not user_lon:
+            bot.send_message(message.chat.id, '❌ Сначала отправь свою геолокацию')
+            return
+
+        # Базовый запрос
+        query = '''
+            SELECT *, 
+                   (6371 * acos(cos(radians(?)) * cos(radians(latitude)) * 
+                   cos(radians(longitude) - radians(?)) + 
+                   sin(radians(?)) * sin(radians(latitude)))) as distance
+            FROM profiles 
+            WHERE user_id != ? AND is_active = 1 
+            AND latitude IS NOT NULL AND longitude IS NOT NULL
+        '''
+        params = [user_lat, user_lon, user_lat, message.from_user.id]
+
+        # Добавляем фильтр по полу если выбран
+        gender_filter = user_filter.get('gender', 'all')
+        if gender_filter == 'male':
+            query += ' AND gender = ?'
+            params.append('👨 Мужской')
+        elif gender_filter == 'female':
+            query += ' AND gender = ?'
+            params.append('👩 Женский')
+
+        # Исключаем уже просмотренные анкеты
+        query += '''
+            AND user_id NOT IN (
+                SELECT viewed_id FROM views 
+                WHERE viewer_id = ?
+            )
+        '''
+        params.append(message.from_user.id)
+
+        # Фильтр по расстоянию (до 50 км)
+        query += ' HAVING distance < 50 ORDER BY distance ASC LIMIT 10'
+
+        cursor.execute(query, params)
+        profiles = cursor.fetchall()
+        conn.close()
+
+        if not profiles:
+            bot.send_message(
+                message.chat.id,
+                '😔 Пока нет анкет поблизости!\n\nПопробуй:\n• Изменить фильтры поиска\n• Подождать пока появятся новые анкеты\n• Расширить радиус поиска'
+            )
+            return
+
+        # Сохраняем список анкет для пользователя
+        user_search_data[message.from_user.id] = {
+            'profiles': profiles,
+            'current_index': 0
+        }
+
+        # Показываем первую анкету
+        show_next_profile(message)
+
+    except Exception as e:
+        logger.error(f"Ошибка поиска по геолокации: {e}")
+        bot.send_message(message.chat.id, '❌ Ошибка при поиске анкет')
 
 
 # Создание анкеты - шаг 1: имя
@@ -175,20 +393,79 @@ def process_gender(message):
 
         user_data[message.from_user.id]['gender'] = gender
 
-        markup = types.ReplyKeyboardRemove()
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn1 = types.KeyboardButton('📍 Отправить геолокацию', request_location=True)
+        btn2 = types.KeyboardButton('🚀 Пропустить геолокацию')
+        markup.add(btn1, btn2)
+
         msg = bot.send_message(
             message.chat.id,
-            f'✅ Пол выбран: *{gender}*\n\n*Из какого ты города?*',
+            f'✅ Пол выбран: *{gender}*\n\n*Теперь укажи свой город или отправь геолокацию:*\n\n_Геолокация поможет находить анкеты рядом с тобой_',
             parse_mode='Markdown',
             reply_markup=markup
         )
-        bot.register_next_step_handler(msg, process_city)
+        bot.register_next_step_handler(msg, process_location_or_city)
     except Exception as e:
         logger.error(f"Ошибка в process_gender: {e}")
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
-# Шаг 4: город
+def process_location_or_city(message):
+    try:
+        if message.content_type == 'location':
+            # Обрабатываем геолокацию
+            latitude = message.location.latitude
+            longitude = message.location.longitude
+
+            # Получаем город по координатам (упрощенно)
+            city = "📍 Рядом с тобой"
+
+            user_data[message.from_user.id]['city'] = city
+            user_data[message.from_user.id]['latitude'] = latitude
+            user_data[message.from_user.id]['longitude'] = longitude
+
+            msg = bot.send_message(
+                message.chat.id,
+                f'📍 *Геолокация сохранена!*\n\nТеперь расскажи о себе:',
+                parse_mode='Markdown',
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+            bot.register_next_step_handler(msg, process_about)
+
+        elif message.text == '🚀 Пропустить геолокацию':
+            msg = bot.send_message(
+                message.chat.id,
+                '🏙️ *Из какого ты города?*',
+                parse_mode='Markdown',
+                reply_markup=types.ReplyKeyboardRemove()
+            )
+            bot.register_next_step_handler(msg, process_city)
+        else:
+            # Пользователь ввел город вручную
+            city = message.text.strip()
+            if len(city) < 2:
+                msg = bot.send_message(message.chat.id,
+                                       '❌ Название города должно быть не короче 2 символов!\nПопробуй еще раз:')
+                bot.register_next_step_handler(msg, process_location_or_city)
+                return
+
+            user_data[message.from_user.id]['city'] = city
+            user_data[message.from_user.id]['latitude'] = None
+            user_data[message.from_user.id]['longitude'] = None
+
+            msg = bot.send_message(
+                message.chat.id,
+                f'🏙️ *Город: {city}*\n\nТеперь расскажи о себе:',
+                parse_mode='Markdown'
+            )
+            bot.register_next_step_handler(msg, process_about)
+
+    except Exception as e:
+        logger.error(f"Ошибка в process_location_or_city: {e}")
+        bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
+
+
+# Шаг 4: город (если не отправлена геолокация)
 def process_city(message):
     try:
         city = message.text.strip()
@@ -199,12 +476,13 @@ def process_city(message):
             return
 
         user_data[message.from_user.id]['city'] = city
+        user_data[message.from_user.id]['latitude'] = None
+        user_data[message.from_user.id]['longitude'] = None
 
         example_about = """*Пример заполнения:*
 🎯 Ищу: новые знакомства, общение
 💼 Делаю: учусь в школе, занимаюсь спортом
 🎮 Интересы: игры, музыка, путешествия
-📱 Telegram: @username
 
 *Теперь расскажи о себе:*"""
 
@@ -219,7 +497,7 @@ def process_city(message):
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
-# Шаг 5: о себе и Telegram
+# Шаг 5: о себе
 def process_about(message):
     try:
         about = message.text.strip()
@@ -234,21 +512,14 @@ def process_about(message):
 
         user_data[message.from_user.id]['about'] = about
 
-        tg_uname = message.from_user.username
-        if tg_uname:
-            user_data[message.from_user.id]['telegram'] = f"@{tg_uname}"
-        else:
-            user_data[message.from_user.id]['telegram'] = "⚠️Не указан"
-
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         btn1 = types.KeyboardButton('📸 Добавить фото')
         btn2 = types.KeyboardButton('🚀 Без фото')
         markup.add(btn1, btn2)
 
-        username_display = user_data[message.from_user.id]['telegram']
         msg = bot.send_message(
             message.chat.id,
-            f'📱 *Telegram username автоматически сохранен:* {username_display}\n\n*Хочешь добавить фото к анкете?*',
+            '📝 Отлично! *Хочешь добавить фото к анкете?*\n\n_Фото поможет привлечь больше внимания_',
             parse_mode='Markdown',
             reply_markup=markup
         )
@@ -259,7 +530,7 @@ def process_about(message):
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
-# Шаг 7: выбор - добавлять фото или нет
+# Шаг 6: выбор - добавлять фото или нет
 def process_photo_choice(message):
     try:
         if message.text == '📸 Добавить фото':
@@ -276,7 +547,7 @@ def process_photo_choice(message):
         bot.send_message(message.chat.id, '❌ Произошла ошибка. Начни заново: /start')
 
 
-# Шаг 8: обработка фото
+# Шаг 7: обработка фото
 def process_photo(message):
     try:
         if message.content_type == 'photo':
@@ -305,11 +576,12 @@ def save_complete_profile(message):
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO profiles 
-            (user_id, name, age, gender, city, about, telegram, photo, is_active) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            (user_id, name, age, gender, city, latitude, longitude, about, telegram, photo, likes_count, is_active) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
         ''', (
             user_id, data['name'], data['age'], data['gender'],
-            data['city'], data['about'], data['telegram'], data.get('photo')
+            data.get('city'), data.get('latitude'), data.get('longitude'),
+            data['about'], '', data.get('photo')
         ))
         conn.commit()
         conn.close()
@@ -331,12 +603,13 @@ def main_menu(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn1 = types.KeyboardButton('📝 Моя анкета')
     btn2 = types.KeyboardButton('👀 Найти анкеты')
-    btn3 = types.KeyboardButton('✏️ Изменить анкету')
-    markup.add(btn1, btn2, btn3)
+    btn3 = types.KeyboardButton('⚙️ Фильтры поиска')
+    btn4 = types.KeyboardButton('✏️ Изменить анкету')
+    markup.add(btn1, btn2, btn3, btn4)
 
     bot.send_message(
         message.chat.id,
-        '🎉 *Анкета создана!* Теперь ты можешь:\n\n• 📝 Посмотреть свою анкету\n• 👀 Найти другие анкеты\n• ✏️ Изменить свою анкету',
+        '🎉 *Анкета создана!* Теперь ты можешь:\n\n• 📝 Посмотреть свою анкету\n• 👀 Найти другие анкеты\n• ⚙️ Настроить фильтры\n• ✏️ Изменить свою анкету',
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -351,7 +624,8 @@ def show_profile(chat_id, user_id, is_new=False):
     conn.close()
 
     if profile:
-        user_id, name, age, gender, city, about, telegram, photo, is_active = profile
+        (user_id, name, age, gender, city, latitude, longitude,
+         about, telegram, photo, likes_count, is_active, created_at) = profile
 
         profile_text = f"""
 📝 *{'НОВАЯ АНКЕТА' if is_new else 'ТВОЯ АНКЕТА'}*
@@ -360,7 +634,7 @@ def show_profile(chat_id, user_id, is_new=False):
 🎂 *Возраст:* {age}
 🚻 *Пол:* {gender}
 🏙️ *Город:* {city}
-📱 *Telegram:* {telegram}
+❤️ *Лайков:* {likes_count}
 
 📖 *О себе:*
 {about}
@@ -407,17 +681,48 @@ def find_profiles(message):
         conn.close()
         return
 
-    # Ищем другие анкеты
-    cursor.execute('''
+    # Проверяем включен ли поиск по геолокации
+    user_filter = user_filters.get(message.from_user.id, {})
+    if user_filter.get('location'):
+        find_profiles_with_location(message)
+        return
+
+    # Обычный поиск без геолокации
+    gender_filter = user_filter.get('gender', 'all')
+
+    # Базовый запрос
+    query = '''
         SELECT * FROM profiles 
         WHERE user_id != ? AND is_active = 1 
-        ORDER BY RANDOM() LIMIT 10
-    ''', (message.from_user.id,))
+    '''
+    params = [message.from_user.id]
+
+    # Добавляем фильтр по полу если выбран
+    if gender_filter == 'male':
+        query += ' AND gender = ?'
+        params.append('👨 Мужской')
+    elif gender_filter == 'female':
+        query += ' AND gender = ?'
+        params.append('👩 Женский')
+
+    # Исключаем уже просмотренные анкеты
+    query += '''
+        AND user_id NOT IN (
+            SELECT viewed_id FROM views 
+            WHERE viewer_id = ?
+        )
+    '''
+    params.append(message.from_user.id)
+
+    query += ' ORDER BY RANDOM() LIMIT 10'
+
+    cursor.execute(query, params)
     profiles = cursor.fetchall()
     conn.close()
 
     if not profiles:
-        bot.send_message(message.chat.id, '😔 Пока нет других анкет\nБудь первым, кто найдет пару!')
+        bot.send_message(message.chat.id,
+                         '😔 Пока нет новых анкет по твоему фильтру!\n\nПопробуй:\n• Изменить фильтры поиска\n• Подождать пока появятся новые анкеты')
         return
 
     # Сохраняем список анкет для пользователя
@@ -447,7 +752,29 @@ def show_next_profile(message):
         return
 
     profile = profiles[index]
-    user_id, name, age, gender, city, about, telegram, photo, is_active = profile
+    (viewed_user_id, name, age, gender, city, latitude, longitude,
+     about, telegram, photo, likes_count, is_active, created_at) = profile
+
+    # Сохраняем просмотр
+    conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR IGNORE INTO views (viewer_id, viewed_id) 
+        VALUES (?, ?)
+    ''', (message.from_user.id, viewed_user_id))
+    conn.commit()
+    conn.close()
+
+    # Показываем расстояние если есть геолокация
+    distance_text = ""
+    user_filter = user_filters.get(message.from_user.id, {})
+    if user_filter.get('location') and user_filter.get('user_lat') and user_filter.get(
+            'user_lon') and latitude and longitude:
+        distance = calculate_distance(
+            user_filter['user_lat'], user_filter['user_lon'],
+            latitude, longitude
+        )
+        distance_text = f"📍 *Расстояние:* {distance:.1f} км\n"
 
     profile_text = f"""
 👤 *Анкета {index + 1}/{len(profiles)}*
@@ -455,17 +782,17 @@ def show_next_profile(message):
 *Имя:* {name}
 *Возраст:* {age}
 *Пол:* {gender}
-*Город:* {city}
-*Telegram:* {telegram}
+*🏙️ Город:* {city}
+{distance_text}❤️ *Лайков:* {likes_count}
 
 *О себе:*
 {about}
     """
 
     markup = types.InlineKeyboardMarkup()
-    btn_like = types.InlineKeyboardButton('❤️ Лайк', callback_data=f'like_{user_id}_{message.from_user.id}')
+    btn_like = types.InlineKeyboardButton('❤️ Лайк', callback_data=f'like_{viewed_user_id}_{message.from_user.id}')
     btn_next = types.InlineKeyboardButton('➡️ Дальше', callback_data='next')
-    btn_report = types.InlineKeyboardButton('🚫 Пожаловаться', callback_data=f'report_{user_id}')
+    btn_report = types.InlineKeyboardButton('🚫 Пожаловаться', callback_data=f'report_{viewed_user_id}')
     markup.add(btn_like, btn_next)
     markup.add(btn_report)
 
@@ -489,7 +816,7 @@ def show_next_profile(message):
         logger.error(f"Ошибка отправки анкеты: {e}")
 
 
-# ========== НОВЫЙ КОД: УПРАВЛЕНИЕ АНКЕТОЙ ==========
+# ========== УПРАВЛЕНИЕ АНКЕТОЙ ==========
 
 # Изменение анкеты
 @bot.message_handler(func=lambda message: message.text == '✏️ Изменить анкету')
@@ -498,11 +825,12 @@ def edit_profile(message):
     btn1 = types.KeyboardButton('👤 Изменить имя')
     btn2 = types.KeyboardButton('🎂 Изменить возраст')
     btn3 = types.KeyboardButton('🏙️ Изменить город')
-    btn4 = types.KeyboardButton('📖 Изменить описание')
-    btn5 = types.KeyboardButton('📷 Изменить фото')
-    btn6 = types.KeyboardButton('🗑️ Удалить анкету')
-    btn7 = types.KeyboardButton('🔙 Назад')
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7)
+    btn4 = types.KeyboardButton('📍 Обновить геолокацию')
+    btn5 = types.KeyboardButton('📖 Изменить описание')
+    btn6 = types.KeyboardButton('📷 Изменить фото')
+    btn7 = types.KeyboardButton('🗑️ Удалить анкету')
+    btn8 = types.KeyboardButton('🔙 Назад')
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
 
     bot.send_message(
         message.chat.id,
@@ -516,6 +844,22 @@ def edit_profile(message):
 @bot.message_handler(func=lambda message: message.text == '🔙 Назад')
 def back_to_main(message):
     main(message)
+
+
+# Обновление геолокации
+@bot.message_handler(func=lambda message: message.text == '📍 Обновить геолокацию')
+def update_location(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_location = types.KeyboardButton('📍 Отправить геолокацию', request_location=True)
+    btn_back = types.KeyboardButton('🔙 Назад')
+    markup.add(btn_location, btn_back)
+
+    bot.send_message(
+        message.chat.id,
+        '📍 *Обновление геолокации*\n\nНажми кнопку ниже чтобы отправить новую геолокацию:',
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
 
 
 # Удаление анкеты
@@ -537,312 +881,4 @@ def delete_profile(message):
 @bot.message_handler(func=lambda message: message.text == '✅ Да, удалить')
 def confirm_delete(message):
     try:
-        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM profiles WHERE user_id = ?', (message.from_user.id,))
-        conn.commit()
-        conn.close()
-
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        btn1 = types.KeyboardButton('📝 Создать анкету')
-        markup.add(btn1)
-
-        bot.send_message(
-            message.chat.id,
-            '🗑️ *Анкета удалена!*\n\nТы можешь создать новую анкету.',
-            parse_mode='Markdown',
-            reply_markup=markup
-        )
-        logger.info(f"👤 Пользователь {message.from_user.id} удалил анкету")
-    except Exception as e:
-        logger.error(f"Ошибка удаления анкеты: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при удалении анкеты')
-
-
-@bot.message_handler(func=lambda message: message.text == '❌ Нет, отмена')
-def cancel_delete(message):
-    edit_profile(message)
-
-
-# Изменение имени
-@bot.message_handler(func=lambda message: message.text == '👤 Изменить имя')
-def edit_name(message):
-    msg = bot.send_message(
-        message.chat.id,
-        '✏️ Введи новое имя:',
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    bot.register_next_step_handler(msg, process_edit_name)
-
-
-def process_edit_name(message):
-    try:
-        new_name = message.text.strip()
-        if len(new_name) < 2:
-            msg = bot.send_message(message.chat.id, '❌ Имя должно быть не короче 2 символов!\nПопробуй еще раз:')
-            bot.register_next_step_handler(msg, process_edit_name)
-            return
-
-        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE profiles SET name = ? WHERE user_id = ?', (new_name, message.from_user.id))
-        conn.commit()
-        conn.close()
-
-        bot.send_message(message.chat.id, f'✅ Имя изменено на: *{new_name}*', parse_mode='Markdown')
-        edit_profile(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка изменения имени: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при изменении имени')
-
-
-# Изменение возраста
-@bot.message_handler(func=lambda message: message.text == '🎂 Изменить возраст')
-def edit_age(message):
-    msg = bot.send_message(
-        message.chat.id,
-        '✏️ Введи новый возраст:',
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    bot.register_next_step_handler(msg, process_edit_age)
-
-
-def process_edit_age(message):
-    try:
-        if not message.text.isdigit():
-            msg = bot.send_message(message.chat.id, '❌ Пожалуйста, введи возраст цифрами:')
-            bot.register_next_step_handler(msg, process_edit_age)
-            return
-
-        new_age = int(message.text)
-        if new_age < 16 or new_age > 100:
-            msg = bot.send_message(message.chat.id, '❌ Возраст должен быть от 16 до 100 лет:')
-            bot.register_next_step_handler(msg, process_edit_age)
-            return
-
-        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE profiles SET age = ? WHERE user_id = ?', (new_age, message.from_user.id))
-        conn.commit()
-        conn.close()
-
-        bot.send_message(message.chat.id, f'✅ Возраст изменен на: *{new_age}*', parse_mode='Markdown')
-        edit_profile(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка изменения возраста: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при изменении возраста')
-
-
-# Изменение города
-@bot.message_handler(func=lambda message: message.text == '🏙️ Изменить город')
-def edit_city(message):
-    msg = bot.send_message(
-        message.chat.id,
-        '✏️ Введи новый город:',
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    bot.register_next_step_handler(msg, process_edit_city)
-
-
-def process_edit_city(message):
-    try:
-        new_city = message.text.strip()
-        if len(new_city) < 2:
-            msg = bot.send_message(message.chat.id,
-                                   '❌ Название города должно быть не короче 2 символов!\nПопробуй еще раз:')
-            bot.register_next_step_handler(msg, process_edit_city)
-            return
-
-        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE profiles SET city = ? WHERE user_id = ?', (new_city, message.from_user.id))
-        conn.commit()
-        conn.close()
-
-        bot.send_message(message.chat.id, f'✅ Город изменен на: *{new_city}*', parse_mode='Markdown')
-        edit_profile(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка изменения города: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при изменении города')
-
-
-# Изменение описания
-@bot.message_handler(func=lambda message: message.text == '📖 Изменить описание')
-def edit_about(message):
-    msg = bot.send_message(
-        message.chat.id,
-        '✏️ Введи новое описание о себе:',
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    bot.register_next_step_handler(msg, process_edit_about)
-
-
-def process_edit_about(message):
-    try:
-        new_about = message.text.strip()
-        if len(new_about) < 20:
-            msg = bot.send_message(message.chat.id, '❌ Описание должно быть не короче 20 символов!\nПопробуй еще раз:')
-            bot.register_next_step_handler(msg, process_edit_about)
-            return
-
-        conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE profiles SET about = ? WHERE user_id = ?', (new_about, message.from_user.id))
-        conn.commit()
-        conn.close()
-
-        bot.send_message(message.chat.id, '✅ Описание успешно обновлено!', parse_mode='Markdown')
-        edit_profile(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка изменения описания: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при изменении описания')
-
-
-# Изменение фото
-@bot.message_handler(func=lambda message: message.text == '📷 Изменить фото')
-def edit_photo(message):
-    msg = bot.send_message(
-        message.chat.id,
-        '📷 Пришли новое фото для анкеты:',
-        parse_mode='Markdown',
-        reply_markup=types.ReplyKeyboardRemove()
-    )
-    bot.register_next_step_handler(msg, process_edit_photo)
-
-
-def process_edit_photo(message):
-    try:
-        if message.content_type == 'photo':
-            new_photo = message.photo[-1].file_id
-
-            conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute('UPDATE profiles SET photo = ? WHERE user_id = ?', (new_photo, message.from_user.id))
-            conn.commit()
-            conn.close()
-
-            bot.send_message(message.chat.id, '✅ Фото успешно обновлено!', parse_mode='Markdown')
-            edit_profile(message)
-        else:
-            msg = bot.send_message(message.chat.id, '❌ Пожалуйста, пришли фото:')
-            bot.register_next_step_handler(msg, process_edit_photo)
-
-    except Exception as e:
-        logger.error(f"Ошибка изменения фото: {e}")
-        bot.send_message(message.chat.id, '❌ Ошибка при изменении фото')
-
-
-# ========== КОНЕЦ НОВОГО КОДА ==========
-
-# Обработка callback-ов
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.data.startswith('like_'):
-        # Формат: like_{user_id_которому_лайкаем}_{user_id_кто_лайкает}
-        parts = call.data.split('_')
-        if len(parts) >= 3:
-            liked_user_id = int(parts[1])  # Чью анкету лайкнули
-            liker_user_id = int(parts[2])  # Кто лайкнул
-
-            # Отправляем уведомление пользователю чью анкету лайкнули
-            try:
-                # Получаем информацию о том кто лайкнул
-                conn = sqlite3.connect('dating_bot.db', check_same_thread=False)
-                cursor = conn.cursor()
-                cursor.execute('SELECT * FROM profiles WHERE user_id = ?', (liker_user_id,))
-                liker_profile = cursor.fetchone()
-                conn.close()
-
-                if liker_profile:
-                    liker_user_id, liker_name, liker_age, liker_gender, liker_city, liker_about, liker_telegram, liker_photo, liker_is_active = liker_profile
-
-                    # Отправляем уведомление
-                    notification_text = f"""
-💖 *Тебя лайкнули!*
-
-👤 *{liker_name}* ({liker_age} лет)
-🏙️ *Город:* {liker_city}
-📱 *Telegram:* {liker_telegram}
-
-*О себе:*
-{liker_about}
-
-💌 Напиши ему/ей первым!
-                    """
-
-                    try:
-                        if liker_photo:
-                            bot.send_photo(liked_user_id, liker_photo, caption=notification_text, parse_mode='Markdown')
-                        else:
-                            bot.send_message(liked_user_id, notification_text, parse_mode='Markdown')
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки уведомления: {e}")
-
-                bot.answer_callback_query(call.id, '❤️ Лайк отправлен! Владелец анкеты получил уведомление!')
-
-            except Exception as e:
-                logger.error(f"Ошибка обработки лайка: {e}")
-                bot.answer_callback_query(call.id, '❤️ Лайк отправлен!')
-        else:
-            bot.answer_callback_query(call.id, '❤️ Лайк отправлен!')
-
-    elif call.data == 'next':
-        user_id = call.from_user.id
-        if user_id in user_search_data:
-            user_search_data[user_id]['current_index'] += 1
-            try:
-                bot.delete_message(call.message.chat.id, call.message.message_id)
-            except:
-                pass  # Если не удалось удалить сообщение - продолжаем
-            show_next_profile(call.message)
-        else:
-            # Если данных нет, запускаем поиск заново
-            find_profiles(call.message)
-
-    elif call.data.startswith('report_'):
-        bot.answer_callback_query(call.id, '🚫 Жалоба отправлена модератору')
-
-
-# Запуск бота
-if __name__ == '__main__':
-    logger.info("🔄 Инициализация бота...")
-    init_db()
-
-    # Если на Render - используем вебхуки
-    if os.environ.get('RENDER'):
-        logger.info("🌐 Режим Render - настройка вебхуков...")
-
-        time.sleep(3)
-
-        render_url = os.environ.get('RENDER_EXTERNAL_URL')
-        if render_url:
-            webhook_url = f"{render_url}/webhook"
-            try:
-                bot.remove_webhook()
-                time.sleep(1)
-                bot.set_webhook(url=webhook_url)
-                logger.info(f"✅ Вебхук установлен: {webhook_url}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка вебхука: {e}")
-
-        port = int(os.environ.get('PORT', 5000))
-        logger.info(f"🚀 Запуск Flask на порту {port}")
-        app.run(host='0.0.0.0', port=port)
-
-    else:
-        # Локальный запуск с поллингом
-        logger.info("🖥️ Локальный запуск (поллинг)...")
-        while True:
-            try:
-                bot.polling(none_stop=True, timeout=60)
-            except Exception as e:
-                logger.error(f"❌ Ошибка: {e}")
-                time.sleep(10)
+        conn = sqlite3
